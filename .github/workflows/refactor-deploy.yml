@@ -1,0 +1,44 @@
+name: Refactor & Deploy MLB System
+
+on:
+  workflow_dispatch:  # Ejecutar manualmente desde GitHub
+
+jobs:
+  refactor-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Refactor Script (si tienes uno)
+        run: |
+          python -c '
+import os
+from pathlib import Path
+
+print("✅ Refactor workflow ejecutado")
+# Aquí puedes agregar lógica adicional si quieres
+          '
+
+      - name: Commit & Push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add .
+          git commit -m "Auto-refactor: Mejoras profesionales completas" || echo "No hay cambios nuevos"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
