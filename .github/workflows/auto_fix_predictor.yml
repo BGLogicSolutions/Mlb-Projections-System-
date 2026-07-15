@@ -1,0 +1,49 @@
+name: Fix and Run Predictor
+on:
+  workflow_dispatch: # Esto te permite ejecutarlo manualmente con un botón
+
+jobs:
+  fix-and-predict:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Esto permite al GITHUB_TOKEN guardar los cambios
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas lightgbm numpy scikit-learn
+
+      - name: Auto-Patch Code
+        run: |
+          # Este comando busca el archivo y añade una línea para eliminar columnas de texto antes de entrenar
+          python3 -c "
+          import os
+          path = 'src/models/predictor.py'
+          with open(path, 'r') as f:
+              lines = f.readlines()
+          
+          with open(path, 'w') as f:
+              for line in lines:
+                  # Si encontramos la línea donde se cargan los datos, inyectamos el filtro
+                  f.write(line)
+                  if 'pd.read_csv' in line:
+                      f.write('            df = df.select_dtypes(include=[\"number\", \"bool\"]) # Auto-fix: Eliminar texto\n')
+          "
+          echo "Código parcheado automáticamente."
+
+      - name: Commit Fix
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Fix: Eliminar columnas no numéricas automáticamente para LightGBM"
+
+      - name: Run Predictor
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          python3 -m src.models.predictor
