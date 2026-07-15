@@ -1,4 +1,1 @@
-pandas
-lightgbm
-scikit-learn
-numpy
+pandas\nlightgbm\nscikit-learn\nnumpy
