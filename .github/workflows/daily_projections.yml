@@ -1,11 +1,11 @@
-name: Daily MLB Projections System
+name: MLB Real-Time Projections
 on:
   schedule:
-    - cron: '0 13 * * *' # Corre todos los días a las 13:00 UTC (Mañana de MLB)
-  workflow_dispatch: # Permite ejecutarlo manualmente con un botón
+    - cron: '0 14 * * *' # Se ejecuta automáticamente cada mañana
+  workflow_dispatch:
 
 jobs:
-  run-projections:
+  fetch-and-predict:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,75 +19,63 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: pip install pandas lightgbm scikit-learn numpy
+        run: pip install pandas lightgbm requests scikit-learn
 
-      - name: Update Predictor Logic
-        # Este paso asegura que el script genere un archivo con la fecha de hoy
+      - name: Update Logic to Real MLB API
         run: |
           cat << 'EOF' > src/models/predictor.py
           import pandas as pd
-          import lightgbm as lgb
-          import os
+          import requests
           from datetime import datetime
-          import logging
+          import os
 
-          logging.basicConfig(level=logging.INFO)
-          logger = logging.getLogger("mlb_projections")
-
-          class MLBStatsPredictor:
-              def __init__(self):
-                  self.data_path = 'data/mlb_model_ready_dataset.csv'
-                  self.output_dir = 'predictions'
-                  os.makedirs(self.output_dir, exist_ok=True)
-
-              def get_data(self):
-                  # Si no hay datos, creamos una base para proyectar
-                  if not os.path.exists(self.data_path):
-                      df = pd.DataFrame({
-                          'player_id': [101, 102, 103, 104, 105],
-                          'avg': [0.280, 0.300, 0.250, 0.220, 0.310],
-                          'home_runs': [20, 35, 10, 5, 40],
-                          'target': [1, 1, 0, 0, 1]
+          def get_mlb_data():
+              today = datetime.now().strftime('%Y-%m-%d')
+              url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=probablePitcher,team"
+              response = requests.get(url).json()
+              
+              games_today = []
+              if "dates" in response and len(response["dates"]) > 0:
+                  for game in response["dates"][0]["games"]:
+                      games_today.append({
+                          "game_id": game["gamePk"],
+                          "home_team": game["teams"]["home"]["team"]["name"],
+                          "away_team": game["teams"]["away"]["team"]["name"],
+                          "home_win_pct": float(game["teams"]["home"].get("leagueRecord", {}).get("pct", 0.500)),
+                          "away_win_pct": float(game["teams"]["away"].get("leagueRecord", {}).get("pct", 0.500)),
+                          "venue": game.get("venue", {}).get("name", "Unknown")
                       })
-                      df.to_csv(self.data_path, index=False)
-                  return pd.read_csv(self.data_path)
+              return pd.DataFrame(games_today)
 
-              def generate_daily_projections(self):
-                  df = self.get_data()
-                  X = df.select_dtypes(include=['number']).drop('target', axis=1, errors='ignore')
-                  y = df['target'] if 'target' in df.columns else [0]*len(df)
+          def run_projections():
+              df = get_mlb_data()
+              if df.empty:
+                  print("No hay juegos programados para hoy.")
+                  return
 
-                  # Entrenar y Predecir
-                  train_data = lgb.Dataset(X, label=y)
-                  model = lgb.train({'objective': 'binary', 'verbose': -1}, train_data)
-                  
-                  preds = model.predict(X)
-                  
-                  # Crear DataFrame de resultados
-                  results = df.copy()
-                  results['win_probability'] = preds
-                  results['projection_date'] = datetime.now().strftime('%Y-%m-%d')
-                  
-                  # Guardar con fecha
-                  filename = f"{self.output_dir}/projections_{datetime.now().strftime('%Y_%m_%d')}.csv"
-                  results.to_csv(filename, index=False)
-                  logger.info(f"✅ Proyecciones guardadas en: {filename}")
-                  return filename
+              # Lógica de Predicción Simple basada en Win % y ventaja de localía
+              # (Aquí podrías meter un modelo de LightGBM más complejo)
+              df['home_win_probability'] = (df['home_win_pct'] * 1.1) / (df['home_win_pct'] + df['away_win_pct'])
+              df['away_win_probability'] = 1 - df['home_win_probability']
+              
+              # Formatear resultados
+              df['projection_date'] = datetime.now().strftime('%Y-%m-%d')
+              os.makedirs('predictions', exist_ok=True)
+              filename = f"predictions/mlb_projections_{datetime.now().strftime('%Y_%m_%d')}.csv"
+              df.to_csv(filename, index=False)
+              print(f"Proyecciones guardadas en {filename}")
 
           if __name__ == "__main__":
-              system = MLBStatsPredictor()
-              system.generate_daily_projections()
+              run_projections()
           EOF
 
-      - name: Run Daily Projections
-        run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python3 src/models/predictor.py
+      - name: Execute Projections
+        run: python3 src/models/predictor.py
 
-      - name: Save Projections to Repo
+      - name: Push Real Data to Repo
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add predictions/*.csv src/models/predictor.py data/*.csv
-          git commit -m "📊 MLB Projections: $(date +'%Y-%m-%d')" || echo "No hay cambios para subir"
+          git add predictions/*.csv
+          git commit -m "⚾ MLB Real-Time Projections: $(date +'%Y-%m-%d')" || echo "No changes"
           git push origin main
