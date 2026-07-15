@@ -19,6 +19,28 @@ class MLBProjectionSystem:
         self.model_path = self.model_dir / "lgb_projections.pkl"
         self.model = None
     
+    def _is_file_valid_csv(self, path):
+        """Valida que el archivo CSV tenga contenido y sea legible"""
+        try:
+            if not path.exists():
+                return False
+            
+            # Verifica que el archivo no esté vacío
+            if path.stat().st_size == 0:
+                logger.warning(f"Archivo vacío: {path}")
+                return False
+            
+            # Intenta leer las primeras líneas para validar estructura
+            df = pd.read_csv(path, nrows=1)
+            if df.empty or len(df.columns) == 0:
+                logger.warning(f"Archivo sin columnas válidas: {path}")
+                return False
+            
+            return True
+        except Exception as e:
+            logger.warning(f"Error validando {path}: {str(e)}")
+            return False
+    
     def load_data(self):
         """Carga datos existentes de forma robusta"""
         possible_files = [
@@ -29,13 +51,13 @@ class MLBProjectionSystem:
         
         for f in possible_files:
             path = self.data_dir / f
-            if path.exists():
+            if self._is_file_valid_csv(path):
                 logger.info(f"Cargando {f}")
                 df = pd.read_csv(path)
                 logger.info(f"Dataset cargado: {df.shape}")
                 return df
         
-        logger.warning("No se encontraron datasets. Creando placeholder mínimo.")
+        logger.warning("No se encontraron datasets válidos. Creando placeholder mínimo.")
         # Placeholder para evitar fallo
         dates = pd.date_range(end=datetime.now(), periods=1000)
         df = pd.DataFrame({
@@ -46,6 +68,7 @@ class MLBProjectionSystem:
             # Agrega más columnas según tus datos
         })
         df.to_csv(self.data_dir / "mlb_model_ready_dataset.csv", index=False)
+        logger.info("✅ Dataset placeholder creado")
         return df
     
     def prepare_features(self, df):
