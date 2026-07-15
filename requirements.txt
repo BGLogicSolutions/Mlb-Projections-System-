@@ -1,17 +1,1 @@
-pandas
-numpy
-scikit-learn
-lightgbm
-xgboost
-pybaseball
-requests
-python-dotenv
-joblib
-mlflow
-fastapi
-uvicorn
-streamlit
-shap
-plotly
-pyarrow  # Para datos eficientes
-dvc  # Data version control (opcional)
+pandas\nlightgbm\nscikit-learn\nnumpy

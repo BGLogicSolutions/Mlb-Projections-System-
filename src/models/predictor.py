@@ -1,176 +1,54 @@
-import os
-from datetime import datetime
-from pathlib import Path
-
-import joblib
-import lightgbm as lgb
 import pandas as pd
-from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import TimeSeriesSplit
+import lightgbm as lgb
+import os
+import logging
 
-from src.notification.telegram_notifier import send_telegram_message
-from src.utils.logger import logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mlb_projections")
 
-
-class MLBProjectionSystem:
-    def __init__(self, model_dir="models", data_dir="data"):
-        self.model_dir = Path(model_dir)
-        self.data_dir = Path(data_dir)
-        self.model_dir.mkdir(exist_ok=True)
-        self.data_dir.mkdir(exist_ok=True)
-        self.model_path = self.model_dir / "lgb_projections.pkl"
+class MLBStatsPredictor:
+    def __init__(self, data_path='data/mlb_model_ready_dataset.csv'):
+        self.data_path = data_path
         self.model = None
 
-    def _is_file_valid_csv(self, path):
-        """Valida que el archivo CSV tenga contenido y sea legible"""
-        try:
-            if not path.exists():
-                return False
-
-            # Verifica que el archivo no esté vacío
-            if path.stat().st_size == 0:
-                logger.warning(f"Archivo vacío: {path}")
-                return False
-
-            # Intenta leer las primeras líneas para validar estructura
-            df = pd.read_csv(path, nrows=1)
-            df = df.select_dtypes(include=["number", "bool"]) # Auto-fix: Eliminar texto
-            if df.empty or len(df.columns) == 0:
-                logger.warning(f"Archivo sin columnas válidas: {path}")
-                return False
-
-            return True
-        except Exception as e:
-            logger.warning(f"Error validando {path}: {str(e)}")
-            return False
-
-    def load_data(self):
-        """Carga datos existentes de forma robusta"""
-        possible_files = [
-            "mlb_model_ready_dataset.csv",
-            "mlb_historical_batters_2015_2026.csv",
-            "mlb_games_clean.csv",
-        ]
-
-        for f in possible_files:
-            path = self.data_dir / f
-            if self._is_file_valid_csv(path):
-                logger.info(f"Cargando {f}")
-                df = pd.read_csv(path)
-            df = df.select_dtypes(include=["number", "bool"]) # Auto-fix: Eliminar texto
-                logger.info(f"Dataset cargado: {df.shape}")
-                return df
-
-        logger.warning(
-            "No se encontraron datasets válidos. Creando placeholder mínimo."
-        )
-        # Placeholder para evitar fallo
-        dates = pd.date_range(end=datetime.now(), periods=1000)
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "player_id": range(1000),
-                "hits": [i % 5 for i in range(1000)],
-                "hr": [i % 2 for i in range(1000)],
-                # Agrega más columnas según tus datos
-            }
-        )
-        df.to_csv(self.data_dir / "mlb_model_ready_dataset.csv", index=False)
-        logger.info("✅ Dataset placeholder creado")
-        return df
-
-    def prepare_features(self, df):
-        """Feature engineering básico (expande según necesidades)"""
-        df = df.copy()
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values("date")
-
-        # Ejemplo de features (ajusta a tus columnas)
-        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-        if "target" not in df.columns and numeric_cols:
-            # Usa una columna como target temporal (ej. hits)
-            df["target"] = df.get("hits", df[numeric_cols[0]])
-
-        feature_cols = [
-            col for col in df.columns if col not in ["target", "date", "player_id"]
-        ]
-        X = df[feature_cols].fillna(0)
-        y = df.get("target", pd.Series([0] * len(df)))
-        return X, y, df
+    def load_and_clean_data(self):
+        if not os.path.exists(self.data_path):
+            logger.warning("Dataset no encontrado. Creando uno de prueba...")
+            df_dummy = pd.DataFrame({
+                'player_id': [1, 2, 3],
+                'avg': [0.280, 0.300, 0.250],
+                'home_runs': [20, 30, 10],
+                'target': [1, 1, 0]
+            })
+            df_dummy.to_csv(self.data_path, index=False)
+            return df_dummy
+        
+        df = pd.read_csv(self.data_path)
+        # FIX: Seleccionar solo columnas numéricas para evitar errores en LightGBM
+        df_numeric = df.select_dtypes(include=['number', 'bool'])
+        logger.info(f"Datos cargados y limpiados. Columnas: {list(df_numeric.columns)}")
+        return df_numeric
 
     def train(self):
-        logger.info("Iniciando entrenamiento...")
-        df = self.load_data()
-        X, y, _ = self.prepare_features(df)
+        df = self.load_and_clean_data()
+        if 'target' not in df.columns:
+            logger.error("Falta la columna 'target' para entrenar.")
+            return
 
-        if len(X) < 100:
-            logger.warning(
-                "Dataset demasiado pequeño. Saltando entrenamiento completo."
-            )
-            return None
+        X = df.drop('target', axis=1)
+        y = df['target']
+        
+        train_data = lgb.Dataset(X, label=y)
+        params = {'objective': 'binary', 'metric': 'auc', 'verbose': -1}
+        
+        logger.info("Entrenando modelo LightGBM...")
+        self.model = lgb.train(params, train_data, num_boost_round=100)
+        logger.info("Entrenamiento completado.")
 
-        tscv = TimeSeriesSplit(n_splits=3)  # Reducido para velocidad
-        mae_scores = []
-
-        for train_idx, val_idx in tscv.split(X):
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-
-            train_data = lgb.Dataset(X_train, label=y_train)
-            params = {
-                "objective": "regression",
-                "metric": "mae",
-                "learning_rate": 0.1,
-                "num_leaves": 31,
-                "verbose": -1,
-                "seed": 42,
-            }
-            model_fold = lgb.train(params, train_data, num_boost_round=50)
-            pred = model_fold.predict(X_val)
-            mae_scores.append(mean_absolute_error(y_val, pred))
-
-        logger.info(f"CV MAE promedio: {sum(mae_scores)/len(mae_scores):.4f}")
-
-        # Entrenamiento final
-        final_data = lgb.Dataset(X, label=y)
-        self.model = lgb.train(params, final_data, num_boost_round=100)
-        joblib.dump(self.model, self.model_path)
-        logger.info(f"✅ Modelo guardado: {self.model_path}")
-        return self.model
-
-    def predict_daily(self):
-        logger.info("Generando proyecciones diarias...")
-        if self.model is None and self.model_path.exists():
-            self.model = joblib.load(self.model_path)
-        elif self.model is None:
-            logger.info("Modelo no encontrado. Entrenando...")
-            self.train()
-
-        df = self.load_data()
-        X, _, original_df = self.prepare_features(df.tail(500))  # Últimos registros
-
-        if self.model is None:
-            logger.error("No se pudo cargar/entrenar modelo")
-            return pd.DataFrame()
-
-        predictions = self.model.predict(X)
-        results = original_df.copy().iloc[-len(predictions) :].copy()
-        results["projection"] = predictions
-        results["prediction_date"] = datetime.now().strftime("%Y-%m-%d")
-
-        output_path = f"projections_{datetime.now().strftime('%Y%m%d')}.csv"
-        results.to_csv(output_path, index=False)
-
-        mensaje = f"🚀 *MLB Projections - {datetime.now().strftime('%Y-%m-%d')}*\n\n"
-        mensaje += f"✅ {len(results)} proyecciones generadas.\n"
-        mensaje += f"Archivo: {output_path}\n"
-        send_telegram_message(mensaje)
-
-        logger.info(f"Proyecciones guardadas en {output_path}")
-        return results
-
+    def run(self):
+        logger.info("Iniciando Sistema de Proyecciones MLB...")
+        self.train()
 
 if __name__ == "__main__":
-    system = MLBProjectionSystem()
-    system.predict_daily()  # Entrena + predice
+    system = MLBStatsPredictor()
+    system.run()

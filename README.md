@@ -1,12 +1,9 @@
-# MLB Projections System - ML Profesional
+# ⚾ MLB Projections System
+Sistema profesional de proyecciones basado en Machine Learning.
 
-Sistema avanzado de proyecciones MLB con Machine Learning para Fantasy y Betting.
+## Estructura
+- `src/models/`: Lógica del modelo (LightGBM).
+- `data/`: Datasets de MLB.
 
-![Python](https://img.shields.io/badge/Python-3.11-blue) ![LightGBM](https://img.shields.io/badge/LightGBM-4.x-green)
-
-## Instalación
-```bash
-git clone ...
-cd Mlb-Projections-System
-pip install -r requirements.txt
-cp .env.example .env
+## Ejecución
+El sistema se limpia y optimiza automáticamente mediante GitHub Actions.
