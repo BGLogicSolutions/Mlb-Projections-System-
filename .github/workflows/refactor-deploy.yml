@@ -1,7 +1,7 @@
 name: Refactor & Deploy MLB System
 
 on:
-  workflow_dispatch:  # Ejecutar manualmente desde GitHub
+  workflow_dispatch:   # Ejecutar manualmente
 
 jobs:
   refactor-and-push:
@@ -19,18 +19,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Run Refactor Script (si tienes uno)
+      - name: Verify and Run Main Script
         run: |
-          python -c '
-import os
-from pathlib import Path
-
-print("✅ Refactor workflow ejecutado")
-# Aquí puedes agregar lógica adicional si quieres
-          '
+          python -m src.models.predictor
 
       - name: Commit & Push changes
         run: |
@@ -38,7 +31,7 @@ print("✅ Refactor workflow ejecutado")
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
           git add .
-          git commit -m "Auto-refactor: Mejoras profesionales completas" || echo "No hay cambios nuevos"
+          git commit -m "Auto-refactor: Mejoras profesionales MLB Projections" || echo "No hay cambios para commitear"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
