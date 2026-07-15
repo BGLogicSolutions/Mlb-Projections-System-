@@ -1,6 +1,6 @@
-name: Full Repository Refactor
+name: Full Repository Refactor V2
 on:
-  workflow_dispatch: # Se ejecuta manualmente
+  workflow_dispatch:
 
 jobs:
   reconstruct-project:
@@ -16,9 +16,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Dependencies in Runner
+        run: |
+          pip install pandas lightgbm scikit-learn numpy
+
       - name: Reconstruct Directory Structure
         run: |
-          rm -rf src data # Borramos lo viejo para limpiar errores
+          rm -rf src data
           mkdir -p src/models src/utils data config
 
       - name: Create Professional Predictor
@@ -29,7 +33,8 @@ jobs:
           import os
           import logging
 
-          logging.basicConfig(level=logging.INFO)
+          # Configuración de logs
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
           logger = logging.getLogger("mlb_projections")
 
           class MLBStatsPredictor:
@@ -39,40 +44,47 @@ jobs:
 
               def load_and_clean_data(self):
                   if not os.path.exists(self.data_path):
-                      logger.warning("Dataset no encontrado. Creando uno de prueba...")
+                      logger.warning("Dataset no encontrado. Generando datos sintéticos para inicializar...")
                       df_dummy = pd.DataFrame({
-                          'player_id': [1, 2, 3],
-                          'avg': [0.280, 0.300, 0.250],
-                          'home_runs': [20, 30, 10],
-                          'target': [1, 1, 0]
+                          'player_id': range(1, 101),
+                          'avg': [0.250] * 100,
+                          'home_runs': [15] * 100,
+                          'target': [0, 1] * 50
                       })
+                      os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
                       df_dummy.to_csv(self.data_path, index=False)
                       return df_dummy
                   
                   df = pd.read_csv(self.data_path)
-                  # FIX: Seleccionar solo columnas numéricas para evitar errores en LightGBM
+                  # MEJORA CRÍTICA: Filtrar solo columnas numéricas para LightGBM
                   df_numeric = df.select_dtypes(include=['number', 'bool'])
-                  logger.info(f"Datos cargados y limpiados. Columnas: {list(df_numeric.columns)}")
+                  logger.info(f"Datos cargados: {df_numeric.shape}")
                   return df_numeric
 
               def train(self):
                   df = self.load_and_clean_data()
                   if 'target' not in df.columns:
-                      logger.error("Falta la columna 'target' para entrenar.")
+                      logger.error("Error: La columna 'target' es necesaria para el entrenamiento.")
                       return
 
                   X = df.drop('target', axis=1)
                   y = df['target']
                   
                   train_data = lgb.Dataset(X, label=y)
-                  params = {'objective': 'binary', 'metric': 'auc', 'verbose': -1}
+                  params = {
+                      'objective': 'binary',
+                      'metric': 'auc',
+                      'verbose': -1,
+                      'boosting_type': 'gbdt',
+                      'learning_rate': 0.05
+                  }
                   
-                  logger.info("Entrenando modelo LightGBM...")
-                  self.model = lgb.train(params, train_data, num_boost_round=100)
-                  logger.info("Entrenamiento completado.")
+                  logger.info("Entrenando modelo de proyecciones MLB...")
+                  self.model = lgb.train(params, train_data, num_boost_round=50)
+                  logger.info("¡Modelo entrenado con éxito!")
 
               def run(self):
-                  logger.info("Iniciando Sistema de Proyecciones MLB...")
+                  logger.info("=== MLB PROJECTIONS SYSTEM READY ===")
                   self.train()
 
           if __name__ == "__main__":
@@ -82,17 +94,20 @@ jobs:
 
       - name: Create Requirements and Readme
         run: |
-          echo "pandas\nlightgbm\nscikit-learn\nnumpy" > requirements.txt
+          echo -e "pandas\nlightgbm\nscikit-learn\nnumpy" > requirements.txt
           cat << 'EOF' > README.md
           # ⚾ MLB Projections System
-          Sistema profesional de proyecciones basado en Machine Learning.
           
-          ## Estructura
-          - `src/models/`: Lógica del modelo (LightGBM).
-          - `data/`: Datasets de MLB.
+          Sistema automatizado de análisis y predicción de estadísticas de la MLB.
           
-          ## Ejecución
-          El sistema se limpia y optimiza automáticamente mediante GitHub Actions.
+          ## 🛠️ Tecnologías
+          - **Python 3.11**
+          - **LightGBM** para modelos predictivos.
+          - **Pandas** para procesamiento de datos.
+          - **GitHub Actions** para automatización total.
+          
+          ## 🚀 Cómo funciona
+          El sistema limpia automáticamente los datos, eliminando columnas no numéricas (como nombres de jugadores) antes de alimentar el modelo de Machine Learning, evitando errores de ejecución.
           EOF
 
       - name: Create Initial Data
@@ -100,13 +115,14 @@ jobs:
           echo "player_id,avg,home_runs,target" > data/mlb_model_ready_dataset.csv
           echo "101,0.285,25,1" >> data/mlb_model_ready_dataset.csv
           echo "102,0.210,5,0" >> data/mlb_model_ready_dataset.csv
+          echo "103,0.310,35,1" >> data/mlb_model_ready_dataset.csv
 
       - name: Commit and Push Refactor
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "Refactor: Reconstrucción completa del sistema (Arquitectura Limpia)"
+          git commit -m "Refactor: Reconstrucción completa con dependencias corregidas"
           git push origin main --force
 
       - name: Final Test Run
