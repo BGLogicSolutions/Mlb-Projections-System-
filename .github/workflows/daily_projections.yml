@@ -1,7 +1,7 @@
 name: MLB Elite Daily Projections
 on:
   schedule:
-    - cron: '0 13 * * *' # Corre cada mañana
+    - cron: '0 13 * * *'
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Necesario para evitar conflictos de git
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,6 +24,7 @@ jobs:
         run: pip install pandas requests numpy
 
       - name: Elite Sabermetric Engine
+        # Pasamos los secrets aquí para que Python los vea
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -37,26 +38,34 @@ jobs:
           def send_telegram(message):
               token = os.getenv('TELEGRAM_BOT_TOKEN')
               chat_id = os.getenv('TELEGRAM_CHAT_ID')
-              if token and chat_id:
-                  url = f"https://api.telegram.org/bot{token}/sendMessage"
-                  requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+              if not token or not chat_id:
+                  print("❌ ERROR: Secrets de Telegram no configurados en GitHub.")
+                  return
+              
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
+              res = requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+              if res.status_code == 200:
+                  print("✅ Mensaje enviado a Telegram con éxito.")
+              else:
+                  print(f"❌ Error de Telegram: {res.text}")
 
           def run_analysis():
               today = datetime.now().strftime('%Y-%m-%d')
+              print(f"Iniciando análisis para {today}...")
+              
               url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=probablePitcher,team"
               data = requests.get(url).json()
               
-              if "dates" not in data or not data["dates"]:
-                  return "No hay juegos hoy."
+              # CASO: No hay juegos (All-Star Break)
+              if "dates" not in data or not data["dates"] or len(data["dates"][0]["games"]) == 0:
+                  send_telegram(f"⚾ *MLB Info - {today}*\n\nNo hay juegos oficiales programados para hoy (posible pausa de All-Star o fin de temporada).")
+                  return
 
-              # Cargar base de datos de inteligencia
               try:
                   intel = pd.read_csv('data/mlb_advanced_intelligence.csv')
-                  # Separar bateadores y lanzadores
                   pitchers_db = intel[intel['type'] == 'Pitcher']
-                  hitters_db = intel[intel['type'] == 'Hitter']
               except:
-                  send_telegram("❌ Error: No se encontró la base de datos de inteligencia. Ejecuta el workflow de Sabermetría primero.")
+                  send_telegram("❌ Error: Base de datos de inteligencia no encontrada.")
                   return
 
               games = data["dates"][0]["games"]
@@ -65,55 +74,33 @@ jobs:
               for game in games:
                   home_team = game["teams"]["home"]["team"]["name"]
                   away_team = game["teams"]["away"]["team"]["name"]
-                  
-                  # 1. Obtener Pitchers y su SIERA
                   h_p_name = game["teams"]["home"].get("probablePitcher", {}).get("fullName", "TBD")
                   a_p_name = game["teams"]["away"].get("probablePitcher", {}).get("fullName", "TBD")
                   
                   h_siera = pitchers_db[pitchers_db['name'] == h_p_name]['SIERA'].mean() if h_p_name in pitchers_db['name'].values else 4.40
                   a_siera = pitchers_db[pitchers_db['name'] == a_p_name]['SIERA'].mean() if a_p_name in pitchers_db['name'].values else 4.40
 
-                  # 2. Ventaja de Pitcheo (Menor SIERA es mejor)
-                  pitching_advantage = a_siera - h_siera 
-
-                  # 3. Probabilidad Final (Fórmula: Base 50% + Ventaja Pitcheo * 12% + Ventaja Local 5%)
-                  win_prob = 50 + (pitching_advantage * 12) + 5
-                  win_prob = max(min(win_prob, 92), 8) # Cap de seguridad
+                  win_prob = 50 + ((a_siera - h_siera) * 12) + 5
+                  win_prob = max(min(win_prob, 92), 8)
 
                   predictions.append({
                       "matchup": f"{away_team} @ {home_team}",
                       "prob": win_prob,
-                      "h_p": h_p_name, "a_p": a_p_name,
-                      "h_siera": h_siera, "a_siera": a_siera
+                      "h_p": h_p_name, "a_p": a_p_name
                   })
 
-              # Ordenar por confianza
               predictions.sort(key=lambda x: abs(x['prob'] - 50), reverse=True)
 
-              # Construir Mensaje
-              msg = f"⚾ *PROYECCIONES MLB - {today}*\n"
-              msg += f"📊 _Analizados {len(predictions)} juegos hoy_\n\n"
-              
+              msg = f"⚾ *PROYECCIONES MLB - {today}*\n\n"
               for p in predictions:
                   star = "⭐" if p['prob'] > 65 or p['prob'] < 35 else "🔹"
                   pick = "LOCAL" if p['prob'] > 50 else "VISITA"
                   conf = p['prob'] if p['prob'] > 50 else (100 - p['prob'])
-                  
-                  msg += f"{star} *{p['matchup']}*\n"
-                  msg += f"   Pitchers: {p['a_p']} vs {p['h_p']}\n"
-                  msg += f"   Pick: `{pick}` | Confianza: `{conf:.1f}%` \n\n"
+                  msg += f"{star} *{p['matchup']}*\n   Pick: `{pick}` ({conf:.1f}%)\n\n"
 
-              # Identificar el "BEST BET"
               best = predictions[0]
-              best_pick = "LOCAL" if best['prob'] > 50 else "VISITA"
-              msg += f"🏆 *PICK DE ALTA CONFIANZA:*\n"
-              msg += f"👉 {best['matchup']} -> *{best_pick}*"
-
+              msg += f"🏆 *TOP PICK:* {best['matchup']}"
               send_telegram(msg)
-              
-              # Guardar resultados
-              os.makedirs('predictions', exist_ok=True)
-              pd.DataFrame(predictions).to_csv(f"predictions/elite_{today}.csv", index=False)
 
           if __name__ == "__main__":
               run_analysis()
@@ -125,6 +112,6 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin main
-          git add predictions/*.csv
-          git commit -m "📊 Elite Projections: $(date +'%Y-%m-%d')" || echo "No changes"
+          git add .
+          git commit -m "📊 Elite Projections Update" || echo "No changes"
           git push origin main
