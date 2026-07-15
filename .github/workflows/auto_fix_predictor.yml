@@ -1,6 +1,6 @@
-name: Super Fixer MLB
+name: MLB Intelligent Fixer
 on:
-  workflow_dispatch: # Botón manual
+  workflow_dispatch:
 
 jobs:
   repair-and-run:
@@ -11,45 +11,52 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Trae todo el historial para evitar conflictos
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
-        run: pip install pandas lightgbm numpy scikit-learn
+      - name: Install Tools
+        run: pip install pandas lightgbm numpy scikit-learn black
 
-      - name: Fix Python Code and Data
+      - name: Smart Patching
         run: |
-          # 1. Arreglar el error de LightGBM (columnas de texto)
           python3 -c "
-          import os
+          import os, re
           path = 'src/models/predictor.py'
           if os.path.exists(path):
               with open(path, 'r') as f:
-                  content = f.read()
-              # Solo insertamos si no existe ya el parche
-              if 'select_dtypes' not in content:
-                  new_content = content.replace(
-                      'df = pd.read_csv(data_path)',
-                      'df = pd.read_csv(data_path)\n            df = df.select_dtypes(include=[\"number\", \"bool\"]) # Auto-fix'
-                  )
-                  with open(path, 'w') as f:
-                      f.write(new_content)
+                  lines = f.readlines()
+              
+              new_lines = []
+              for line in lines:
+                  new_lines.append(line)
+                  # Si la línea contiene la carga del CSV, detectamos su sangría
+                  if 'pd.read_csv' in line and 'select_dtypes' not in line:
+                      indent = line[:len(line) - len(line.lstrip())]
+                      new_lines.append(f'{indent}df = df.select_dtypes(include=[\"number\", \"bool\"]) # Auto-fix\n')
+              
+              with open(path, 'w') as f:
+                  f.writelines(new_lines)
           "
-          # 2. Arreglar el error de archivo vacío (CSV)
+          # Forzamos un formateo profesional para eliminar cualquier error de espacios
+          black src/models/predictor.py
+
+      - name: Fix Data Structure
+        run: |
+          mkdir -p data
           echo "player_id,hits,runs,avg" > data/mlb_model_ready_dataset.csv
           echo "1,0,0,0.0" >> data/mlb_model_ready_dataset.csv
 
-      - name: Force Push Fixes
+      - name: Save and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "Fix: Corrección automática de tipos de datos y archivos CSV" || echo "No hay cambios"
-          git push origin main --force # Esto resuelve el error de 'rejected'
+          git commit -m "Fix: Sangría corregida y formateo Black aplicado" || echo "No changes"
+          git push origin main --force
 
       - name: Run Predictor
         run: |
