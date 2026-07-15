@@ -1,64 +1,115 @@
-name: MLB Intelligent Fixer
+name: Full Repository Refactor
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Se ejecuta manualmente
 
 jobs:
-  repair-and-run:
+  reconstruct-project:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Tools
-        run: pip install pandas lightgbm numpy scikit-learn black
-
-      - name: Smart Patching
+      - name: Reconstruct Directory Structure
         run: |
-          python3 -c "
-          import os, re
-          path = 'src/models/predictor.py'
-          if os.path.exists(path):
-              with open(path, 'r') as f:
-                  lines = f.readlines()
-              
-              new_lines = []
-              for line in lines:
-                  new_lines.append(line)
-                  # Si la línea contiene la carga del CSV, detectamos su sangría
-                  if 'pd.read_csv' in line and 'select_dtypes' not in line:
-                      indent = line[:len(line) - len(line.lstrip())]
-                      new_lines.append(f'{indent}df = df.select_dtypes(include=[\"number\", \"bool\"]) # Auto-fix\n')
-              
-              with open(path, 'w') as f:
-                  f.writelines(new_lines)
-          "
-          # Forzamos un formateo profesional para eliminar cualquier error de espacios
-          black src/models/predictor.py
+          rm -rf src data # Borramos lo viejo para limpiar errores
+          mkdir -p src/models src/utils data config
 
-      - name: Fix Data Structure
+      - name: Create Professional Predictor
         run: |
-          mkdir -p data
-          echo "player_id,hits,runs,avg" > data/mlb_model_ready_dataset.csv
-          echo "1,0,0,0.0" >> data/mlb_model_ready_dataset.csv
+          cat << 'EOF' > src/models/predictor.py
+          import pandas as pd
+          import lightgbm as lgb
+          import os
+          import logging
 
-      - name: Save and Push
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger("mlb_projections")
+
+          class MLBStatsPredictor:
+              def __init__(self, data_path='data/mlb_model_ready_dataset.csv'):
+                  self.data_path = data_path
+                  self.model = None
+
+              def load_and_clean_data(self):
+                  if not os.path.exists(self.data_path):
+                      logger.warning("Dataset no encontrado. Creando uno de prueba...")
+                      df_dummy = pd.DataFrame({
+                          'player_id': [1, 2, 3],
+                          'avg': [0.280, 0.300, 0.250],
+                          'home_runs': [20, 30, 10],
+                          'target': [1, 1, 0]
+                      })
+                      df_dummy.to_csv(self.data_path, index=False)
+                      return df_dummy
+                  
+                  df = pd.read_csv(self.data_path)
+                  # FIX: Seleccionar solo columnas numéricas para evitar errores en LightGBM
+                  df_numeric = df.select_dtypes(include=['number', 'bool'])
+                  logger.info(f"Datos cargados y limpiados. Columnas: {list(df_numeric.columns)}")
+                  return df_numeric
+
+              def train(self):
+                  df = self.load_and_clean_data()
+                  if 'target' not in df.columns:
+                      logger.error("Falta la columna 'target' para entrenar.")
+                      return
+
+                  X = df.drop('target', axis=1)
+                  y = df['target']
+                  
+                  train_data = lgb.Dataset(X, label=y)
+                  params = {'objective': 'binary', 'metric': 'auc', 'verbose': -1}
+                  
+                  logger.info("Entrenando modelo LightGBM...")
+                  self.model = lgb.train(params, train_data, num_boost_round=100)
+                  logger.info("Entrenamiento completado.")
+
+              def run(self):
+                  logger.info("Iniciando Sistema de Proyecciones MLB...")
+                  self.train()
+
+          if __name__ == "__main__":
+              system = MLBStatsPredictor()
+              system.run()
+          EOF
+
+      - name: Create Requirements and Readme
+        run: |
+          echo "pandas\nlightgbm\nscikit-learn\nnumpy" > requirements.txt
+          cat << 'EOF' > README.md
+          # ⚾ MLB Projections System
+          Sistema profesional de proyecciones basado en Machine Learning.
+          
+          ## Estructura
+          - `src/models/`: Lógica del modelo (LightGBM).
+          - `data/`: Datasets de MLB.
+          
+          ## Ejecución
+          El sistema se limpia y optimiza automáticamente mediante GitHub Actions.
+          EOF
+
+      - name: Create Initial Data
+        run: |
+          echo "player_id,avg,home_runs,target" > data/mlb_model_ready_dataset.csv
+          echo "101,0.285,25,1" >> data/mlb_model_ready_dataset.csv
+          echo "102,0.210,5,0" >> data/mlb_model_ready_dataset.csv
+
+      - name: Commit and Push Refactor
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "Fix: Sangría corregida y formateo Black aplicado" || echo "No changes"
+          git commit -m "Refactor: Reconstrucción completa del sistema (Arquitectura Limpia)"
           git push origin main --force
 
-      - name: Run Predictor
+      - name: Final Test Run
         run: |
           export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python3 -m src.models.predictor
+          python3 src/models/predictor.py
