@@ -1,6 +1,6 @@
-name: MLB Sabermetric Intelligence (Advanced Metrics)
+name: MLB Sabermetric Intelligence V2
 on:
-  workflow_dispatch: # Ejecución manual para reentrenamiento profundo
+  workflow_dispatch:
 
 jobs:
   collect-and-calculate:
@@ -19,93 +19,87 @@ jobs:
       - name: Install Dependencies
         run: pip install pandas requests numpy scikit-learn lightgbm
 
+      - name: Create Directory Structure
+        run: mkdir -p src/data src/models data models predictions
+
       - name: Sabermetric Engine
         run: |
           cat << 'EOF' > src/data/sabermetrics.py
           import pandas as pd
           import requests
           import numpy as np
-          from datetime import datetime
+          import os
 
           def get_advanced_stats(year, group="hitting"):
-              print(f"Extrayendo {group} de la temporada {year}...")
-              # Endpoint de MLB StatsAPI con hidratación de métricas avanzadas
+              print(f"Descargando {group} {year}...")
               url = f"https://statsapi.mlb.com/api/v1/stats?stats=season&group={group}&season={year}&sportId=1"
-              data = requests.get(url).json()
+              res = requests.get(url).json()
               
               stats_list = []
-              if "stats" in data and len(data["stats"]) > 0:
-                  for split in data["stats"][0]["splits"]:
-                      player_name = split["player"]["fullName"]
+              if "stats" in res and len(res["stats"]) > 0:
+                  for split in res["stats"][0]["splits"]:
+                      p_name = split["player"]["fullName"]
                       s = split["stat"]
                       
                       if group == "hitting":
-                          # Cálculos de Sabermetría para Bateo
-                          obp = float(s.get("obp", 0))
-                          slg = float(s.get("slg", 0))
-                          avg = float(s.get("avg", 0))
-                          iso = slg - avg
-                          # Aproximación de wOBA (Pesos estándar)
-                          woba = (0.69 * float(s.get("baseOnBalls", 0)) + 0.89 * float(s.get("hits", 0)) + 1.27 * float(s.get("doubles", 0)) + 1.62 * float(s.get("triples", 0)) + 2.10 * float(s.get("homeRuns", 0))) / max(float(s.get("atBats", 1)), 1)
+                          # Métricas de Bateo Avanzadas
+                          ab = float(s.get("atBats", 1))
+                          h = float(s.get("hits", 0))
+                          d2b = float(s.get("doubles", 0))
+                          d3b = float(s.get("triples", 0))
+                          hr = float(s.get("homeRuns", 0))
+                          bb = float(s.get("baseOnBalls", 0))
+                          hbp = float(s.get("hitByPitch", 0))
+                          sf = float(s.get("sacrificeFlies", 0))
+                          
+                          # wOBA (Weighted On-Base Average) - Pesos 2024-2026 aprox.
+                          woba = (0.69*bb + 0.72*hbp + 0.89*(h-d2b-d3b-hr) + 1.27*d2b + 1.62*d3b + 2.10*hr) / (ab + bb + hbp + sf) if (ab+bb+hbp+sf) > 0 else 0
                           
                           stats_list.append({
-                              "name": player_name,
-                              "year": year,
-                              "OBP": obp,
-                              "ISO": iso,
+                              "name": p_name, "year": year, "type": "Hitter",
+                              "OBP": float(s.get("obp", 0)),
+                              "ISO": float(s.get("slg", 0)) - float(s.get("avg", 0)),
                               "wOBA": woba,
-                              "OPS_plus": float(s.get("ops", 0)) * 100, # Simplificado
-                              "HardHit_pct": float(s.get("hardHitPct", 0)) if "hardHitPct" in s else 40.0,
-                              "Barrel_pct": float(s.get("barrelPct", 0)) if "barrelPct" in s else 8.0,
-                              "WAR": float(s.get("war", 0)) if "war" in s else (woba * 5) # Proxy
+                              "HardHit_pct": float(s.get("hardHitPct", 40.0)),
+                              "Barrel_pct": float(s.get("barrelPct", 8.0)),
+                              "WAR": float(s.get("war", woba * 10)) # Proxy WAR
                           })
                       
                       elif group == "pitching":
-                          # Cálculos de Sabermetría para Pitcheo
+                          # Métricas de Pitcheo Avanzadas
                           ip = float(s.get("inningsPitched", 1))
                           k = float(s.get("strikeOuts", 0))
                           bb = float(s.get("baseOnBalls", 0))
                           hr = float(s.get("homeRuns", 0))
-                          era = float(s.get("era", 0))
+                          hbp = float(s.get("hitByPitch", 0))
                           
-                          # FIP Formula: ((13*HR)+(3*(BB+HBP))-(2*K))/IP + FIP_Constant(approx 3.10)
-                          fip = ((13 * hr) + (3 * bb) - (2 * k)) / max(ip, 1) + 3.10
-                          whip = float(s.get("whip", 0))
-                          k_bb_pct = (k / max(float(s.get("battersFaced", 1)), 1)) - (bb / max(float(s.get("battersFaced", 1)), 1))
+                          # FIP (Fielding Independent Pitching)
+                          fip = ((13*hr + 3*(bb+hbp) - 2*k) / ip) + 3.15 if ip > 0 else 0
+                          # SIERA (Skill-interactive ERA) - Simplificada
+                          siera = 3.25 + 1.5*(bb/max(ip,1)) - 1.25*(k/max(ip,1))
                           
                           stats_list.append({
-                              "name": player_name,
-                              "year": year,
-                              "FIP": fip,
-                              "xFIP": fip * 0.95, # Proxy basado en HR/FB estable
-                              "SIERA": 20 * (bb/max(ip,1)) - 10 * (k/max(ip,1)) + 4.0, # Simplificada
-                              "WHIP": whip,
-                              "K_BB_pct": k_bb_pct,
-                              "ERA_minus": (era / 4.20) * 100, # Ajustado a liga
-                              "WPA": float(s.get("wpa", 0)) if "wpa" in s else 0.0
+                              "name": p_name, "year": year, "type": "Pitcher",
+                              "FIP": fip, "xFIP": fip * 0.94, "SIERA": siera,
+                              "WHIP": float(s.get("whip", 0)),
+                              "K_BB_pct": (k - bb) / max(float(s.get("battersFaced", 1)), 1),
+                              "ERA_minus": (float(s.get("era", 4.0)) / 4.20) * 100
                           })
               return pd.DataFrame(stats_list)
 
-          def build_master_dataset():
-              years = [2024, 2025, 2026]
-              all_data = []
-              for y in years:
-                  h = get_advanced_stats(y, "hitting")
-                  p = get_advanced_stats(y, "pitching")
-                  combined = pd.concat([h, p], axis=0)
-                  all_data.append(combined)
-              
-              master_df = pd.concat(all_data, axis=0)
-              os.makedirs('data', exist_ok=True)
-              master_df.to_csv('data/mlb_advanced_intelligence.csv', index=False)
-              print(f"✅ Dataset Maestro creado con {len(master_df)} registros.")
-
           if __name__ == "__main__":
-              build_master_dataset()
+              all_data = []
+              for y in [2024, 2025, 2026]:
+                  all_data.append(get_advanced_stats(y, "hitting"))
+                  all_data.append(get_advanced_stats(y, "pitching"))
+              
+              df_final = pd.concat(all_data)
+              df_final.to_csv('data/mlb_advanced_intelligence.csv', index=False)
+              print("✅ Dataset Sabermétrico Creado.")
           EOF
           python3 src/data/sabermetrics.py
 
-      - name: Retrain Advanced Model
+      - name: Advanced Training
         run: |
           cat << 'EOF' > src/models/predictor.py
           import pandas as pd
@@ -113,28 +107,27 @@ jobs:
           import os
 
           def train():
+              if not os.path.exists('data/mlb_advanced_intelligence.csv'): return
               df = pd.read_csv('data/mlb_advanced_intelligence.csv')
-              # Limpiar nombres y años para el modelo
               X = df.select_dtypes(include=['number']).fillna(0)
-              # Creamos un target basado en WAR/WPA (éxito del jugador)
-              y = (X.get('WAR', 0) + X.get('WPA', 0) > X.get('WAR', 0).median()).astype(int)
+              # Target: Jugadores con rendimiento por encima del promedio (Top 30%)
+              y = (X.iloc[:, 0] > X.iloc[:, 0].quantile(0.7)).astype(int)
               
-              train_data = lgb.Dataset(X, label=y)
-              model = lgb.train({'objective': 'binary', 'metric': 'auc', 'verbose': -1}, train_data)
-              
+              model = lgb.train({'objective': 'binary', 'metric': 'auc', 'verbose': -1}, 
+                               lgb.Dataset(X, label=y), num_boost_round=200)
               os.makedirs('models', exist_ok=True)
               model.save_model('models/mlb_sabermetric_model.txt')
-              print("🧠 Cerebro Sabermétrico entrenado.")
+              print("🧠 Modelo Sabermétrico Entrenado.")
 
           if __name__ == "__main__":
               train()
           EOF
           python3 src/models/predictor.py
 
-      - name: Save Intelligence to Repo
+      - name: Commit and Push
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/mlb_advanced_intelligence.csv models/mlb_sabermetric_model.txt
-          git commit -m "🚀 Sabermetric Intelligence Update: wOBA, FIP, SIERA, WAR included" || echo "No changes"
+          git add .
+          git commit -m "🚀 Sabermetric Intelligence V2: wOBA, FIP, SIERA, WAR" || echo "No changes"
           git push origin main
