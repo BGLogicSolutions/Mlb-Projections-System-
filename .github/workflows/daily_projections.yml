@@ -1,11 +1,11 @@
-name: MLB Real-Time Projections
+name: MLB Sabermetric Projections & Telegram
 on:
   schedule:
-    - cron: '0 14 * * *' # Se ejecuta automáticamente cada mañana
+    - cron: '0 10 * * *' # Corre a las 10:00 AM UTC (Madrugada/Mañana de MLB)
   workflow_dispatch:
 
 jobs:
-  fetch-and-predict:
+  predict-and-notify:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,63 +19,82 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: pip install pandas lightgbm requests scikit-learn
+        run: pip install pandas requests lightgbm
 
-      - name: Update Logic to Real MLB API
+      - name: Advanced Prediction Logic
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          cat << 'EOF' > src/models/predictor.py
+          cat << 'EOF' > src/models/daily_bot.py
           import pandas as pd
           import requests
-          from datetime import datetime
+          from datetime import datetime, timedelta
           import os
 
-          def get_mlb_data():
-              today = datetime.now().strftime('%Y-%m-%d')
-              url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}&hydrate=probablePitcher,team"
-              response = requests.get(url).json()
-              
-              games_today = []
-              if "dates" in response and len(response["dates"]) > 0:
-                  for game in response["dates"][0]["games"]:
-                      games_today.append({
-                          "game_id": game["gamePk"],
-                          "home_team": game["teams"]["home"]["team"]["name"],
-                          "away_team": game["teams"]["away"]["team"]["name"],
-                          "home_win_pct": float(game["teams"]["home"].get("leagueRecord", {}).get("pct", 0.500)),
-                          "away_win_pct": float(game["teams"]["away"].get("leagueRecord", {}).get("pct", 0.500)),
-                          "venue": game.get("venue", {}).get("name", "Unknown")
-                      })
-              return pd.DataFrame(games_today)
+          def get_tomorrow_games():
+              tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+              url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={tomorrow}&hydrate=probablePitcher,team"
+              return requests.get(url).json(), tomorrow
 
-          def run_projections():
-              df = get_mlb_data()
-              if df.empty:
-                  print("No hay juegos programados para hoy.")
+          def send_telegram(message):
+              token = os.getenv('TELEGRAM_BOT_TOKEN')
+              chat_id = os.getenv('TELEGRAM_CHAT_ID')
+              if token and chat_id:
+                  url = f"https://api.telegram.org/bot{token}/sendMessage"
+                  requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+
+          def run():
+              data, date_str = get_tomorrow_games()
+              if "dates" not in data or not data["dates"]:
+                  send_telegram(f"⚠️ No hay juegos programados para {date_str}")
                   return
 
-              # Lógica de Predicción Simple basada en Win % y ventaja de localía
-              # (Aquí podrías meter un modelo de LightGBM más complejo)
-              df['home_win_probability'] = (df['home_win_pct'] * 1.1) / (df['home_win_pct'] + df['away_win_pct'])
-              df['away_win_probability'] = 1 - df['home_win_probability']
+              # Cargar Inteligencia Sabermétrica
+              try:
+                  intel = pd.read_csv('data/mlb_advanced_intelligence.csv')
+              except:
+                  intel = pd.DataFrame()
+
+              report = f"⚾ *PRONÓSTICOS SABERMÉTRICOS - {date_str}*\n\n"
               
-              # Formatear resultados
-              df['projection_date'] = datetime.now().strftime('%Y-%m-%d')
+              for game in data["dates"][0]["games"]:
+                  home = game["teams"]["home"]["team"]["name"]
+                  away = game["teams"]["away"]["team"]["name"]
+                  
+                  # Obtener Pitchers Probables
+                  h_pitcher = game["teams"]["home"].get("probablePitcher", {}).get("fullName", "TBD")
+                  a_pitcher = game["teams"]["away"].get("probablePitcher", {}).get("fullName", "TBD")
+
+                  # Buscar SIERA del Pitcher en nuestra base de datos
+                  h_siera = intel[intel['name'] == h_pitcher]['SIERA'].values[0] if h_pitcher in intel['name'].values else 4.50
+                  a_siera = intel[intel['name'] == a_pitcher]['SIERA'].values[0] if a_pitcher in intel['name'].values else 4.50
+
+                  # Lógica de ventaja: Menor SIERA = Mejor Pitcher
+                  diff = a_siera - h_siera
+                  prob = 50 + (diff * 10) # Ajuste simple: cada punto de SIERA de diferencia es 10% de prob
+                  prob = max(min(prob, 95), 5) # Limitar entre 5% y 95%
+
+                  emoji = "🔥" if prob > 60 else "⚖️"
+                  report += f"{emoji} *{away} vs {home}*\n"
+                  report += f"   P: {a_pitcher} (SIERA: {a_siera:.2f}) vs {h_pitcher} (SIERA: {h_siera:.2f})\n"
+                  report += f"   Prob. Local: `{prob:.1f}%` \n\n"
+
+              send_telegram(report)
+              
+              # Guardar CSV de respaldo
               os.makedirs('predictions', exist_ok=True)
-              filename = f"predictions/mlb_projections_{datetime.now().strftime('%Y_%m_%d')}.csv"
-              df.to_csv(filename, index=False)
-              print(f"Proyecciones guardadas en {filename}")
+              pd.DataFrame([{"date": date_str, "report": report}]).to_csv(f"predictions/report_{date_str}.csv")
 
           if __name__ == "__main__":
-              run_projections()
+              run()
           EOF
+          python3 src/models/daily_bot.py
 
-      - name: Execute Projections
-        run: python3 src/models/predictor.py
-
-      - name: Push Real Data to Repo
+      - name: Commit Projections
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add predictions/*.csv
-          git commit -m "⚾ MLB Real-Time Projections: $(date +'%Y-%m-%d')" || echo "No changes"
+          git commit -m "🤖 Daily Bot Report: $(date +'%Y-%m-%d')" || echo "No changes"
           git push origin main
