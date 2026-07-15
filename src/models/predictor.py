@@ -34,6 +34,7 @@ class MLBProjectionSystem:
 
             # Intenta leer las primeras líneas para validar estructura
             df = pd.read_csv(path, nrows=1)
+            df = df.select_dtypes(include=["number", "bool"]) # Auto-fix: Eliminar texto
             if df.empty or len(df.columns) == 0:
                 logger.warning(f"Archivo sin columnas válidas: {path}")
                 return False
@@ -56,6 +57,7 @@ class MLBProjectionSystem:
             if self._is_file_valid_csv(path):
                 logger.info(f"Cargando {f}")
                 df = pd.read_csv(path)
+            df = df.select_dtypes(include=["number", "bool"]) # Auto-fix: Eliminar texto
                 logger.info(f"Dataset cargado: {df.shape}")
                 return df
 
