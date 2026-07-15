@@ -1,0 +1,21 @@
+name: Auto Format Code
+on: [push]
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-python-version: '3.9'
+      - name: Install Black and Isort
+        run: pip install black isort
+      - name: Run Black
+        run: black .
+      - name: Run Isort
+        run: isort .
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Refactor: Mejora automática de formato de código"
